@@ -1,6 +1,6 @@
 import pandas as pd
 import numpy as np
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
@@ -17,7 +17,11 @@ from sklearn.metrics import (
     recall_score,
     f1_score,
 )
-from sklearn.datasets import load_iris
+from sklearn.datasets import load_iris, fetch_openml
+import matplotlib.pyplot as plt
+import seaborn as sns
+import io
+import base64
 
 app = FastAPI()
 
@@ -58,7 +62,6 @@ class MLProcessor:
         self.test_size = test_size
         self.random_state = random_state
 
-        # Normalize model names for flexibility
         self.model_name = self.normalize_model_name(model_name)
 
         self.X_train = self.X_test = None
@@ -66,13 +69,16 @@ class MLProcessor:
 
         self.available_models = {
             "logisticregression": LogisticRegression,
+            "logistic": LogisticRegression,
             "randomforest": RandomForestClassifier,
+            "random-forest": RandomForestClassifier,
             "neuralnetwork": MLPClassifier,
+            "neuralnet": MLPClassifier,
+            "mlp": MLPClassifier,
         }
 
     def normalize_model_name(self, name: str) -> str:
-        # remove spaces, dashes, underscores, lowercase
-        return "".join(name.lower().split()).replace("-", "").replace("_", "")
+        return name.lower().replace(" ", "").replace("-", "").replace("_", "")
 
     def preprocess(self):
         if self.target_col not in self.df.columns:
@@ -90,17 +96,16 @@ class MLProcessor:
             raise ValueError(f"Model '{self.model_name}' not supported")
 
         # Configure model parameters
-        if self.model_name == "neuralnetwork":
+        if "neural" in self.model_name:
             model = ModelClass(random_state=self.random_state, max_iter=500)
-        elif self.model_name == "randomforest":
+        elif "forest" in self.model_name:
             model = ModelClass(random_state=self.random_state)
-        else:  # logisticregression
+        else:  # logistic
             model = ModelClass(max_iter=500, random_state=self.random_state)
 
         model.fit(self.X_train, self.y_train)
         y_pred = model.predict(self.X_test)
 
-        # Predict probabilities if available
         y_pred_proba = None
         if hasattr(model, "predict_proba"):
             proba = model.predict_proba(self.X_test)
@@ -116,7 +121,7 @@ class MLProcessor:
         result["recall"] = float(recall_score(self.y_test, y_pred, average=avg, zero_division=0))
         result["f1_score"] = float(f1_score(self.y_test, y_pred, average=avg, zero_division=0))
 
-        # ROC curve for binary classification
+        # ROC curve
         if y_pred_proba is not None and num_classes == 2:
             fpr, tpr, _ = roc_curve(self.y_test, y_pred_proba)
             roc_auc = auc(fpr, tpr)
@@ -137,11 +142,20 @@ class MLProcessor:
                 for f, i in zip(self.X_train.columns, coefs)
             ]
 
-        # Correlation heatmap
+        # Correlation heatmap (Base64 image)
         try:
             corr = self.df.drop(columns=[self.target_col]).corr()
-            result["heatmap"] = corr.values.tolist()
-            result["heatmap_features"] = corr.columns.tolist()
+            result["heatmap"] = {"matrix": corr.values.tolist(), "features": corr.columns.tolist()}
+
+            # Generate image
+            plt.figure(figsize=(6, 5))
+            sns.heatmap(corr, annot=True, cmap="coolwarm")
+            buf = io.BytesIO()
+            plt.savefig(buf, format="png", bbox_inches="tight")
+            plt.close()
+            buf.seek(0)
+            img_base64 = base64.b64encode(buf.read()).decode("utf-8")
+            result["heatmap"]["image_base64"] = img_base64
         except Exception:
             pass
 
@@ -157,12 +171,15 @@ def load_dataset(name: str) -> pd.DataFrame:
         df = pd.DataFrame(ds.data, columns=[c.replace(" (cm)", "").strip() for c in ds.feature_names])
         df["target"] = ds.target
         return df
+    elif name_norm in ("mnist", "mnist dataset"):
+        ds = fetch_openml("mnist_784", version=1, as_frame=True)
+        df = ds.frame.copy()
+        df.rename(columns={"class": "target"}, inplace=True)
+        return df
     elif name_norm in ("diabetes", "diabetes.csv"):
-        df = pd.read_csv("./datasets/diabetes.csv")
-        return df
+        return pd.read_csv("./datasets/diabetes.csv")
     elif name_norm in ("titanic", "titanic.csv"):
-        df = pd.read_csv("./datasets/titanic.csv")
-        return df
+        return pd.read_csv("./datasets/titanic.csv")
     else:
         raise ValueError(f"Dataset '{name}' not supported")
 
@@ -201,10 +218,7 @@ async def process_ml(request: MLRequest):
             filtered_results["feature_importance"] = results["feature_importance"]
 
         if any(k in ("heatmap", "correlation", "feature_heatmap") for k in viz_keys) and "heatmap" in results:
-            filtered_results["heatmap"] = {
-                "matrix": results["heatmap"],
-                "features": results.get("heatmap_features", []),
-            }
+            filtered_results["heatmap"] = results["heatmap"]
 
         return {"success": True, "results": filtered_results}
 

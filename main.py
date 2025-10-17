@@ -172,10 +172,10 @@ def load_dataset(name: str) -> pd.DataFrame:
         df["target"] = ds.target
         return df
     elif name_norm in ("mnist", "mnist dataset"):
-        ds = fetch_openml("mnist_784", version=1, as_frame=True)
-        df = ds.frame.copy()
-        df.rename(columns={"class": "target"}, inplace=True)
-        return df
+    ds = fetch_openml("mnist_784", version=1, as_frame=True, parser="auto")
+    df = ds.frame.copy()
+    df.rename(columns={"class": "target"}, inplace=True)
+    return df
     elif name_norm in ("diabetes", "diabetes.csv"):
         return pd.read_csv("./datasets/diabetes.csv")
     elif name_norm in ("titanic", "titanic.csv"):
